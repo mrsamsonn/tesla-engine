@@ -294,7 +294,13 @@ body {
 }
 
 .seg.three {
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
+}
+
+.seg.three button {
+  font-size: clamp(1.05rem, 3.8vw, 1.2rem);
+  letter-spacing: 0.06em;
+  padding: 0 4px;
 }
 
 .seg button {
