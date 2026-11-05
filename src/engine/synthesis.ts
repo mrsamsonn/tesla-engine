@@ -1,9 +1,9 @@
 /**
- * Procedural V8 / V12 exhaust + EV jet/sonic whoosh via Web Audio.
+ * Procedural Porsche flat-6 / Ferrari V12 exhaust + EV jet/sonic whoosh.
  * No sample packs — oscillators, filtered noise, and RPM-synced pulses.
  */
 
-export type EngineType = "v8" | "v12" | "ev";
+export type EngineType = "porsche" | "ferrari" | "ev";
 
 export type SynthParams = {
   engine: EngineType;
@@ -38,7 +38,7 @@ export class EngineSynth {
   private rumbleOsc: OscillatorNode | null = null;
   private rumbleGain: GainNode | null = null;
   private started = false;
-  private engine: EngineType = "v8";
+  private engine: EngineType = "porsche";
   private lastShiftAt = 0;
   private lastLoad = 0;
 
@@ -83,86 +83,98 @@ export class EngineSynth {
 
     const now = this.ctx.currentTime;
     const rpm = Math.max(600, p.rpm);
-    const cyl = p.engine === "v12" ? 12 : 8;
+    const ferrari = p.engine === "ferrari";
+    const cyl = ferrari ? 12 : 6;
     const fireHz = (rpm / 60) * (cyl / 2);
     const fund = rpm / 60;
 
+    // PDK ups are snappy cutouts; Ferrari downs scream
+    const shiftMul =
+      p.shifting === "up" ? (ferrari ? 0.5 : 0.42) : p.shifting === "down" ? 1.25 : 1;
     const vol =
       p.volume *
-      (0.35 + p.load * 0.45 + p.aggressiveness * 0.15) *
-      (p.shifting === "up" ? 0.55 : p.shifting === "down" ? 1.2 : 1);
-    this.master.gain.setTargetAtTime(vol, now, 0.04);
+      (0.34 + p.load * 0.48 + p.aggressiveness * 0.16) *
+      shiftMul;
+    this.master.gain.setTargetAtTime(vol, now, ferrari ? 0.035 : 0.028);
 
-    const baseCutoff =
-      p.engine === "v12"
-        ? 420 + rpm * 0.55 + p.load * 1800
-        : 280 + rpm * 0.48 + p.load * 2200;
+    const baseCutoff = ferrari
+      ? 520 + rpm * 0.62 + p.load * 2100
+      : 360 + rpm * 0.58 + p.load * 1900;
     const cutoff = Math.min(
-      6200,
-      baseCutoff * (0.85 + p.aggressiveness * 0.35),
+      ferrari ? 7200 : 6400,
+      baseCutoff * (0.88 + p.aggressiveness * 0.32),
     );
-    this.filter.frequency.setTargetAtTime(cutoff, now, 0.06);
-    this.filter.Q.setTargetAtTime(0.7 + p.load * 1.4, now, 0.08);
+    this.filter.frequency.setTargetAtTime(cutoff, now, 0.05);
+    this.filter.Q.setTargetAtTime(0.65 + p.load * 1.5, now, 0.07);
 
     if (this.presence) {
       this.presence.frequency.setTargetAtTime(
-        p.engine === "v12" ? 1800 : 1100,
+        ferrari ? 2100 + rpm * 0.05 : 1400 + rpm * 0.04,
         now,
-        0.1,
+        0.09,
       );
       this.presence.gain.setTargetAtTime(
-        3 + p.load * 6 + p.aggressiveness * 4,
+        (ferrari ? 4 : 3.5) + p.load * 7 + p.aggressiveness * 4,
         now,
-        0.1,
+        0.09,
       );
     }
 
     for (const h of this.harmonics) {
       const freq = Math.min(this.ctx.sampleRate / 2 - 100, fund * h.ratio);
-      h.osc.frequency.setTargetAtTime(freq, now, 0.03);
+      h.osc.frequency.setTargetAtTime(freq, now, 0.025);
+      // Flat-6: emphasize 1.5 / odd-ish rasp; Ferrari: bright upper stack
+      const characterBoost = ferrari
+        ? h.ratio >= 3
+          ? 1.35
+          : 0.95
+        : h.ratio === 1.5 || h.ratio === 3
+          ? 1.4
+          : 1;
       const amp =
-        (0.08 / Math.sqrt(h.ratio)) *
-        (p.engine === "v8" && h.ratio % 2 !== 0 ? 1.25 : 1) *
-        (0.7 + p.load * 0.6);
-      h.gain.gain.setTargetAtTime(amp, now, 0.05);
+        (0.085 / Math.sqrt(h.ratio)) *
+        characterBoost *
+        (0.7 + p.load * 0.65);
+      h.gain.gain.setTargetAtTime(amp, now, 0.045);
     }
 
     if (this.pulseOsc && this.pulseGain) {
-      this.pulseOsc.frequency.setTargetAtTime(Math.max(8, fireHz), now, 0.025);
+      this.pulseOsc.frequency.setTargetAtTime(Math.max(10, fireHz), now, 0.02);
       const pulseAmp =
-        (p.engine === "v8" ? 0.22 : 0.12) *
-        (0.5 + p.load * 0.8) *
-        (0.7 + p.aggressiveness * 0.5);
-      this.pulseGain.gain.setTargetAtTime(pulseAmp, now, 0.05);
+        (ferrari ? 0.14 : 0.2) *
+        (0.5 + p.load * 0.85) *
+        (0.75 + p.aggressiveness * 0.45);
+      this.pulseGain.gain.setTargetAtTime(pulseAmp, now, 0.045);
     }
 
     if (this.noiseGain) {
       const noiseAmp =
-        (p.engine === "v8" ? 0.14 : 0.08) *
-        (0.35 + p.load * 0.9) *
-        (0.6 + p.aggressiveness * 0.5);
-      this.noiseGain.gain.setTargetAtTime(noiseAmp, now, 0.06);
+        (ferrari ? 0.09 : 0.12) *
+        (0.35 + p.load * 0.95) *
+        (0.65 + p.aggressiveness * 0.45);
+      this.noiseGain.gain.setTargetAtTime(noiseAmp, now, 0.055);
     }
 
     if (this.roarGain) this.roarGain.gain.setTargetAtTime(0, now, 0.05);
 
     if (this.rumbleOsc && this.rumbleGain) {
-      const rumbleRatio = p.engine === "v8" ? 0.5 : 1;
+      // Flat-6: light boxer thrum; Ferrari: thinner low end, more scream above
+      const rumbleRatio = ferrari ? 1 : 0.75;
       this.rumbleOsc.frequency.setTargetAtTime(
-        Math.max(20, fund * rumbleRatio),
+        Math.max(22, fund * rumbleRatio),
         now,
         0.04,
       );
       this.rumbleGain.gain.setTargetAtTime(
-        p.engine === "v8" ? 0.18 + p.load * 0.12 : 0.06 + p.load * 0.05,
+        ferrari ? 0.05 + p.load * 0.05 : 0.1 + p.load * 0.08,
         now,
-        0.06,
+        0.055,
       );
     }
 
-    if (p.shifting && this.ctx.currentTime - this.lastShiftAt > 0.12) {
+    if (p.shifting && this.ctx.currentTime - this.lastShiftAt > 0.1) {
       this.lastShiftAt = this.ctx.currentTime;
-      this.playShiftBlip(p.shifting, p.aggressiveness);
+      this.playShiftBlip(p.shifting, p.aggressiveness, ferrari);
     }
   }
 
@@ -306,19 +318,19 @@ export class EngineSynth {
 
     const ratios =
       this.engine === "ev"
-        ? [1, 1.5, 2, 2.5] // thick jet core only — keep CPU light
-        : this.engine === "v12"
+        ? [1, 1.5, 2, 2.5]
+        : this.engine === "ferrari"
           ? [1, 2, 3, 4, 5, 6, 8]
-          : [0.5, 1, 1.5, 2, 3, 4, 5];
+          : [1, 1.5, 2, 3, 4, 5, 6]; // Porsche flat-6 rasp
 
     this.harmonics = ratios.map((ratio) => {
       const osc = ctx.createOscillator();
       osc.type =
         this.engine === "ev"
           ? "sawtooth"
-          : this.engine === "v12"
+          : this.engine === "ferrari"
             ? "sawtooth"
-            : "square";
+            : "sawtooth";
       const gain = ctx.createGain();
       gain.gain.value = 0;
       osc.connect(gain);
@@ -340,8 +352,8 @@ export class EngineSynth {
     this.noiseFilter = ctx.createBiquadFilter();
     this.noiseFilter.type = "bandpass";
     this.noiseFilter.frequency.value =
-      this.engine === "ev" ? 700 : this.engine === "v8" ? 900 : 1400;
-    this.noiseFilter.Q.value = this.engine === "ev" ? 0.5 : 0.6;
+      this.engine === "ev" ? 700 : this.engine === "porsche" ? 1100 : 1600;
+    this.noiseFilter.Q.value = this.engine === "ev" ? 0.5 : 0.65;
     this.noiseGain = ctx.createGain();
     this.noiseGain.gain.value = 0;
     noise.connect(this.noiseFilter);
@@ -426,30 +438,37 @@ export class EngineSynth {
     this.rumbleGain = null;
   }
 
-  private playShiftBlip(kind: "up" | "down", aggressiveness: number) {
+  private playShiftBlip(
+    kind: "up" | "down",
+    aggressiveness: number,
+    ferrari = false,
+  ) {
     if (!this.ctx || !this.filter) return;
     const ctx = this.ctx;
     const now = ctx.currentTime;
     const osc = ctx.createOscillator();
     const g = ctx.createGain();
     osc.type = "sawtooth";
-    const startF = kind === "down" ? 90 : 220;
-    const endF = kind === "down" ? 340 + aggressiveness * 220 : 110;
+    const startF = kind === "down" ? (ferrari ? 120 : 95) : ferrari ? 280 : 240;
+    const endF =
+      kind === "down"
+        ? 360 + aggressiveness * 240
+        : ferrari
+          ? 130
+          : 100;
+    const dur = kind === "down" ? (ferrari ? 0.11 : 0.09) : ferrari ? 0.06 : 0.05;
     osc.frequency.setValueAtTime(startF, now);
-    osc.frequency.exponentialRampToValueAtTime(
-      Math.max(40, endF),
-      now + (kind === "down" ? 0.1 : 0.07),
-    );
+    osc.frequency.exponentialRampToValueAtTime(Math.max(40, endF), now + dur);
     g.gain.setValueAtTime(0.0001, now);
     g.gain.exponentialRampToValueAtTime(
-      0.22 + aggressiveness * 0.2,
-      now + 0.01,
+      0.2 + aggressiveness * 0.22,
+      now + 0.008,
     );
-    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.13);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + dur + 0.03);
     osc.connect(g);
     g.connect(this.filter);
     osc.start(now);
-    osc.stop(now + 0.15);
+    osc.stop(now + dur + 0.04);
   }
 }
 
