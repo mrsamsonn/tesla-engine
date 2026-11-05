@@ -88,7 +88,7 @@ app.innerHTML = `
       </div>
       <p class="tips">
         V8/V12: PDK Sport Plus kickdowns — raise Sportiness for eager downs.
-        EV: continuous motor whine with speed/accel (no gears).
+        EV: jet / sonic whoosh — strong by 65–85 mph (no gears).
       </p>
     </section>
 
@@ -288,6 +288,7 @@ function frame() {
       volume,
       aggressiveness,
       shifting: gb.shift,
+      speedMph: mph,
     });
   }
 

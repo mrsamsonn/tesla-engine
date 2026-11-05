@@ -1,5 +1,5 @@
 /**
- * Procedural V8 / V12 exhaust + EV motor whine via Web Audio.
+ * Procedural V8 / V12 exhaust + EV jet/sonic whoosh via Web Audio.
  * No sample packs — oscillators, filtered noise, and RPM-synced pulses.
  */
 
@@ -12,6 +12,8 @@ export type SynthParams = {
   volume: number; // 0–1
   aggressiveness: number; // 0–1
   shifting: "up" | "down" | null;
+  /** Road speed — drives EV jet curve (ignored for ICE) */
+  speedMph?: number;
 };
 
 type Harmonic = {
@@ -28,6 +30,9 @@ export class EngineSynth {
   private harmonics: Harmonic[] = [];
   private noiseGain: GainNode | null = null;
   private noiseSource: AudioBufferSourceNode | null = null;
+  private noiseFilter: BiquadFilterNode | null = null;
+  private roarGain: GainNode | null = null;
+  private roarFilter: BiquadFilterNode | null = null;
   private pulseGain: GainNode | null = null;
   private pulseOsc: OscillatorNode | null = null;
   private rumbleOsc: OscillatorNode | null = null;
@@ -35,6 +40,7 @@ export class EngineSynth {
   private started = false;
   private engine: EngineType = "v8";
   private lastShiftAt = 0;
+  private lastLoad = 0;
 
   get isRunning() {
     return this.started && this.ctx?.state === "running";
@@ -138,6 +144,8 @@ export class EngineSynth {
       this.noiseGain.gain.setTargetAtTime(noiseAmp, now, 0.06);
     }
 
+    if (this.roarGain) this.roarGain.gain.setTargetAtTime(0, now, 0.05);
+
     if (this.rumbleOsc && this.rumbleGain) {
       const rumbleRatio = p.engine === "v8" ? 0.5 : 1;
       this.rumbleOsc.frequency.setTargetAtTime(
@@ -158,82 +166,115 @@ export class EngineSynth {
     }
   }
 
-  /** Sporty synthetic e-sound: continuous whine + load rasp, no gear blips. */
+  /**
+   * Fighter-jet / sonic whoosh: layered roar + tonal core.
+   * Present at crawl; intensity & pitch near max by 65–85 mph, then plateau.
+   */
   private updateEv(p: SynthParams) {
     if (!this.ctx || !this.master || !this.filter) return;
     const now = this.ctx.currentTime;
-    const rpm = Math.max(400, p.rpm);
-    const fund = rpm / 60; // ~6.7 Hz idle → ~267 Hz at 16k
+    const mph = Math.max(0, p.speedMph ?? 0);
+    const { intensity, pitch } = jetSpeedCurve(mph);
+    const sport = Math.max(0, Math.min(1, p.aggressiveness));
+    const load = Math.max(0, Math.min(1, p.load));
+    // Pressure bloom on hard accel (Doppler-ish rush)
+    const dLoad = Math.max(0, load - this.lastLoad);
+    this.lastLoad = load;
+    const bloom = Math.min(1, load * 0.85 + dLoad * 8);
 
-    const vol =
-      p.volume *
-      (0.28 + p.load * 0.55 + p.aggressiveness * 0.18) *
-      (0.85 + Math.min(1, rpm / 12000) * 0.2);
-    this.master.gain.setTargetAtTime(vol, now, 0.05);
+    const body =
+      0.42 + intensity * 0.48 + bloom * 0.22 + sport * 0.1;
+    const vol = p.volume * Math.min(1.15, body);
+    this.master.gain.setTargetAtTime(vol, now, 0.06);
 
+    // Wide-open lowpass so the roar stays thick, not thin
     const cutoff = Math.min(
-      9000,
-      900 + rpm * 0.35 + p.load * 2800 + p.aggressiveness * 900,
+      7800,
+      900 + pitch * 4200 + bloom * 1600 + sport * 600,
     );
-    this.filter.frequency.setTargetAtTime(cutoff, now, 0.05);
-    this.filter.Q.setTargetAtTime(0.9 + p.load * 1.8, now, 0.08);
+    this.filter.frequency.setTargetAtTime(cutoff, now, 0.07);
+    this.filter.Q.setTargetAtTime(0.55 + bloom * 0.6, now, 0.08);
 
     if (this.presence) {
+      // Chest / boom band — not a piercing EV whistle
       this.presence.frequency.setTargetAtTime(
-        2200 + p.load * 1800 + rpm * 0.08,
+        480 + pitch * 520 + bloom * 280,
         now,
-        0.08,
+        0.09,
       );
       this.presence.gain.setTargetAtTime(
-        5 + p.load * 8 + p.aggressiveness * 5,
+        6 + intensity * 5 + bloom * 5 + sport * 2,
+        now,
+        0.09,
+      );
+    }
+
+    // Tonal jet core (few low–mid saws) — plateaus with pitch
+    const coreHz = 62 + pitch * 95 + bloom * 28;
+    for (const h of this.harmonics) {
+      const freq = Math.min(2200, coreHz * h.ratio);
+      h.osc.frequency.setTargetAtTime(freq, now, 0.05);
+      const amp =
+        (0.14 / Math.sqrt(h.ratio)) *
+        (0.55 + intensity * 0.55 + bloom * 0.35) *
+        (h.ratio <= 2 ? 1.25 : 0.7);
+      h.gain.gain.setTargetAtTime(amp, now, 0.06);
+    }
+
+    // Primary air-rush / afterburner noise
+    if (this.noiseFilter && this.noiseGain) {
+      this.noiseFilter.frequency.setTargetAtTime(
+        380 + pitch * 1100 + bloom * 500,
+        now,
+        0.08,
+      );
+      this.noiseFilter.Q.setTargetAtTime(0.45 + bloom * 0.25, now, 0.1);
+      this.noiseGain.gain.setTargetAtTime(
+        0.16 + intensity * 0.28 + bloom * 0.18 + sport * 0.06,
+        now,
+        0.07,
+      );
+    }
+
+    // Second roar layer (broader, lower) — jet body
+    if (this.roarFilter && this.roarGain) {
+      this.roarFilter.frequency.setTargetAtTime(
+        180 + pitch * 420 + bloom * 200,
+        now,
+        0.09,
+      );
+      this.roarGain.gain.setTargetAtTime(
+        0.2 + intensity * 0.32 + bloom * 0.14,
         now,
         0.08,
       );
     }
 
-    for (const h of this.harmonics) {
-      const freq = Math.min(this.ctx.sampleRate / 2 - 100, fund * h.ratio);
-      h.osc.frequency.setTargetAtTime(freq, now, 0.04);
-      const amp =
-        (0.1 / Math.sqrt(h.ratio)) *
-        (0.55 + p.load * 0.75) *
-        (h.ratio < 3 ? 1.15 : 0.85);
-      h.gain.gain.setTargetAtTime(amp, now, 0.05);
-    }
-
+    // Whoosh sweep tone (flyby energy)
     if (this.pulseOsc && this.pulseGain) {
-      // Soft PWM-ish motor texture tracking speed
       this.pulseOsc.frequency.setTargetAtTime(
-        Math.max(40, fund * 4),
-        now,
-        0.04,
-      );
-      this.pulseGain.gain.setTargetAtTime(
-        0.06 + p.load * 0.14 + p.aggressiveness * 0.06,
+        140 + pitch * 380 + bloom * 120,
         now,
         0.06,
       );
-    }
-
-    if (this.noiseGain) {
-      this.noiseGain.gain.setTargetAtTime(
-        0.04 + p.load * 0.12 + p.aggressiveness * 0.05,
+      this.pulseGain.gain.setTargetAtTime(
+        0.05 + intensity * 0.12 + bloom * 0.14,
         now,
         0.07,
       );
     }
 
+    // Sub pressure / afterburner thrum
     if (this.rumbleOsc && this.rumbleGain) {
-      // Low inverter thrum
       this.rumbleOsc.frequency.setTargetAtTime(
-        Math.max(30, fund * 0.5),
+        38 + pitch * 36 + bloom * 18,
         now,
-        0.05,
+        0.07,
       );
       this.rumbleGain.gain.setTargetAtTime(
-        0.08 + p.load * 0.1,
+        0.14 + intensity * 0.16 + bloom * 0.12,
         now,
-        0.07,
+        0.08,
       );
     }
   }
@@ -265,7 +306,7 @@ export class EngineSynth {
 
     const ratios =
       this.engine === "ev"
-        ? [1, 1.5, 2, 3, 4, 6, 8]
+        ? [1, 1.5, 2, 2.5] // thick jet core only — keep CPU light
         : this.engine === "v12"
           ? [1, 2, 3, 4, 5, 6, 8]
           : [0.5, 1, 1.5, 2, 3, 4, 5];
@@ -290,31 +331,52 @@ export class EngineSynth {
     const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
     const data = noiseBuffer.getChannelData(0);
     for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+
     const noise = ctx.createBufferSource();
     noise.buffer = noiseBuffer;
     noise.loop = true;
-    const noiseFilter = ctx.createBiquadFilter();
-    noiseFilter.type = "bandpass";
-    noiseFilter.frequency.value =
-      this.engine === "ev" ? 2400 : this.engine === "v8" ? 900 : 1400;
-    noiseFilter.Q.value = this.engine === "ev" ? 1.1 : 0.6;
-    this.noiseGain = ctx.createGain();
-    this.noiseGain.gain.value = 0;
-    noise.connect(noiseFilter);
-    noiseFilter.connect(this.noiseGain);
-    this.noiseGain.connect(this.filter);
-    noise.start();
     this.noiseSource = noise;
 
+    this.noiseFilter = ctx.createBiquadFilter();
+    this.noiseFilter.type = "bandpass";
+    this.noiseFilter.frequency.value =
+      this.engine === "ev" ? 700 : this.engine === "v8" ? 900 : 1400;
+    this.noiseFilter.Q.value = this.engine === "ev" ? 0.5 : 0.6;
+    this.noiseGain = ctx.createGain();
+    this.noiseGain.gain.value = 0;
+    noise.connect(this.noiseFilter);
+    this.noiseFilter.connect(this.noiseGain);
+    this.noiseGain.connect(this.filter);
+
+    // Extra roar layer for EV (same buffer, separate band) — skipped for ICE
+    if (this.engine === "ev") {
+      this.roarFilter = ctx.createBiquadFilter();
+      this.roarFilter.type = "lowpass";
+      this.roarFilter.frequency.value = 500;
+      this.roarFilter.Q.value = 0.7;
+      this.roarGain = ctx.createGain();
+      this.roarGain.gain.value = 0;
+      noise.connect(this.roarFilter);
+      this.roarFilter.connect(this.roarGain);
+      this.roarGain.connect(this.filter);
+    }
+
+    noise.start();
+
     this.pulseOsc = ctx.createOscillator();
-    this.pulseOsc.type = this.engine === "ev" ? "triangle" : "sine";
+    this.pulseOsc.type = this.engine === "ev" ? "sawtooth" : "sine";
     this.pulseGain = ctx.createGain();
     this.pulseGain.gain.value = 0;
-    const pulseShape = ctx.createWaveShaper();
-    pulseShape.curve = makePulseCurve();
-    this.pulseOsc.connect(pulseShape);
-    pulseShape.connect(this.pulseGain);
-    this.pulseGain.connect(this.filter);
+    if (this.engine === "ev") {
+      this.pulseOsc.connect(this.pulseGain);
+      this.pulseGain.connect(this.filter);
+    } else {
+      const pulseShape = ctx.createWaveShaper();
+      pulseShape.curve = makePulseCurve();
+      this.pulseOsc.connect(pulseShape);
+      pulseShape.connect(this.pulseGain);
+      this.pulseGain.connect(this.filter);
+    }
     this.pulseOsc.start();
 
     this.rumbleOsc = ctx.createOscillator();
@@ -344,7 +406,10 @@ export class EngineSynth {
       this.rumbleOsc?.disconnect();
       this.noiseSource?.stop();
       this.noiseSource?.disconnect();
+      this.noiseFilter?.disconnect();
       this.noiseGain?.disconnect();
+      this.roarFilter?.disconnect();
+      this.roarGain?.disconnect();
       this.pulseGain?.disconnect();
       this.rumbleGain?.disconnect();
     } catch {
@@ -353,7 +418,10 @@ export class EngineSynth {
     this.pulseOsc = null;
     this.rumbleOsc = null;
     this.noiseSource = null;
+    this.noiseFilter = null;
     this.noiseGain = null;
+    this.roarFilter = null;
+    this.roarGain = null;
     this.pulseGain = null;
     this.rumbleGain = null;
   }
@@ -383,6 +451,29 @@ export class EngineSynth {
     osc.start(now);
     osc.stop(now + 0.15);
   }
+}
+
+/** Soft at crawl, near peak by 65–85 mph, light plateau above. */
+function jetSpeedCurve(mph: number): { intensity: number; pitch: number } {
+  const m = Math.max(0, mph);
+  // Present while crawling (not silent until 30+)
+  const crawl = 1 - Math.exp(-m / 14);
+  // Sigmoid centered ~58 mph → ~0.9 by 75
+  const rise = 1 / (1 + Math.exp(-(m - 52) / 9));
+  let intensity = Math.min(1, crawl * 0.38 + rise * 0.72);
+  // Soft plateau past ~88 so it doesn't scream forever upward
+  if (m > 88) {
+    intensity = Math.min(1, intensity + Math.min(0.06, (m - 88) * 0.003));
+  }
+
+  // Pitch climbs to ~1 around 80, then barely moves
+  let pitch = Math.min(1, m / 78);
+  if (m > 78) {
+    pitch = Math.min(1.05, 1 + (m - 78) * 0.002);
+  }
+  pitch = Math.min(1, pitch);
+
+  return { intensity, pitch };
 }
 
 function makePulseCurve(): Float32Array<ArrayBuffer> {
