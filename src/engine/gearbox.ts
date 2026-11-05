@@ -1,31 +1,43 @@
-/** Simulated multi-gear mapping from road speed → RPM with PDK-style shifts. */
+/** Simulated multi-gear mapping from road speed → RPM with PDK Sport Plus shifts. */
 
 export type EngineConfig = {
   idleRpm: number;
   redline: number;
-  /** Final drive × tire circumference factor: mph per 1000 rpm in top gear-ish */
+  /** mph per 1000 rpm in the ratio=1 gear — lower = shorter overall, earlier road shifts */
   mphPerThousandInTop: number;
-  gearRatios: number[]; // relative to top gear (=1)
+  gearRatios: number[]; // relative to top-ish (=1)
+  /** Continuous drive (EV) — no discrete shifts */
+  continuous?: boolean;
 };
 
+/** Shorter map so 35–85 mph still climbs RPM and shifts often. */
 export const V8_CONFIG: EngineConfig = {
   idleRpm: 750,
   redline: 7200,
-  mphPerThousandInTop: 48,
-  gearRatios: [3.6, 2.4, 1.7, 1.3, 1.0, 0.82],
+  mphPerThousandInTop: 26,
+  gearRatios: [3.9, 2.55, 1.85, 1.35, 1.0, 0.78],
 };
 
 export const V12_CONFIG: EngineConfig = {
   idleRpm: 700,
   redline: 8500,
-  mphPerThousandInTop: 52,
-  gearRatios: [3.4, 2.3, 1.65, 1.25, 1.0, 0.85, 0.72],
+  mphPerThousandInTop: 28,
+  gearRatios: [3.7, 2.45, 1.8, 1.4, 1.1, 0.9, 0.72],
+};
+
+/** Single-speed EV drive unit — pitch from speed/load only. */
+export const EV_CONFIG: EngineConfig = {
+  idleRpm: 0,
+  redline: 16000,
+  mphPerThousandInTop: 12,
+  gearRatios: [1],
+  continuous: true,
 };
 
 export type ShiftKind = "up" | "down" | null;
 
 export type GearboxState = {
-  gear: number; // 1-indexed
+  gear: number; // 1-indexed; EV stays 1
   rpm: number;
   shift: ShiftKind;
   /** 0–1 throttle proxy from acceleration */
@@ -35,8 +47,7 @@ export type GearboxState = {
 };
 
 /**
- * Dual-clutch-inspired logic: shift from sustained accel intent, not just RPM.
- * Hard throttle → multi-gear kickdown + high-RPM hold; lift → rev-matched downs.
+ * Dual-clutch Sport Plus logic for ICE; continuous motor RPM for EV.
  */
 export class Gearbox {
   private config: EngineConfig;
@@ -46,9 +57,7 @@ export class Gearbox {
   private shiftCooldownUntil = 0;
   private pendingShift: ShiftKind = null;
   private pendingShiftUntil = 0;
-  /** Fast EMA for exhaust load feel */
   private smoothedAccel = 0;
-  /** Slower EMA for shift / kickdown decisions (rejects GPS spikes) */
   private intentAccel = 0;
   private kickdownUntil = 0;
   private kickdownArmedUntil = 0;
@@ -78,7 +87,6 @@ export class Gearbox {
 
   update(speedMph: number, now = performance.now()): GearboxState {
     const dt = Math.max(0.016, Math.min(0.25, (now - this.lastTs) / 1000));
-    // Clamp single-frame spikes (GPS jumps) before filtering
     const rawAccel = Math.max(-18, Math.min(22, (speedMph - this.lastSpeedMph) / dt));
     const fastAlpha = Math.min(1, dt * 5);
     const intentAlpha = Math.min(1, dt * 2.2);
@@ -88,17 +96,24 @@ export class Gearbox {
     this.lastTs = now;
 
     const sport = Math.max(0, Math.min(1, this.aggressiveness));
-    const kickThreshold = 5.2 - sport * 2.4; // mph/s — sportier = easier kickdown
-    const moderateAccel = 1.2 + sport * 0.6;
-    const liftThreshold = -1.8 - sport * 0.6;
+    // Sport Plus bias: high sportiness → eager kickdowns & assertive lifts
+    const sportPlus = sport * sport; // nonlinear toward the top of the slider
+
+    if (this.config.continuous) {
+      return this.updateEv(speedMph, sport, now);
+    }
+
+    // Sport Plus: lower kick threshold, quicker arm, deeper drops
+    const kickThreshold = 4.4 - sport * 2.2 - sportPlus * 0.8;
+    const moderateAccel = 0.9 + sport * 0.5;
+    const liftThreshold = -1.2 - sport * 0.9 - sportPlus * 0.5;
     const inKickdown = now < this.kickdownUntil;
 
-    // Require sustained intent before arming a kickdown (noise rejection)
     if (this.intentAccel >= kickThreshold) {
       if (this.kickdownArmedUntil === 0) {
-        this.kickdownArmedUntil = now + (120 - sport * 50);
+        this.kickdownArmedUntil = now + Math.max(40, 95 - sport * 55);
       }
-    } else if (this.intentAccel < kickThreshold * 0.55) {
+    } else if (this.intentAccel < kickThreshold * 0.5) {
       this.kickdownArmedUntil = 0;
     }
 
@@ -113,64 +128,79 @@ export class Gearbox {
       const maxGear = this.config.gearRatios.length;
       const rpm = this.rpmAt(speedMph, this.gear);
 
-      // --- Hard throttle: multi-gear kickdown ---
       const kickReady =
         this.kickdownArmedUntil > 0 && now >= this.kickdownArmedUntil;
       if (kickReady && this.gear > 1 && this.intentAccel >= kickThreshold) {
-        const targetRpmFrac = 0.72 + sport * 0.14; // sit higher in the band
-        const maxDrop = 1 + Math.floor(sport * 2); // 1–3 gears
+        const targetRpmFrac = 0.68 + sport * 0.16 + sportPlus * 0.06;
+        const maxDrop = 1 + Math.floor(sport * 2 + sportPlus); // 1–4 gears
         let dropped = 0;
         while (
           dropped < maxDrop &&
           this.gear > 1 &&
-          this.rpmAt(speedMph, this.gear - 1) < this.config.redline * 0.95
+          this.rpmAt(speedMph, this.gear - 1) < this.config.redline * 0.96
         ) {
           const next = this.rpmAt(speedMph, this.gear - 1);
-          // Keep dropping while next gear still sits under the target pull band
           if (dropped > 0 && next >= this.config.redline * targetRpmFrac) break;
           this.gear -= 1;
           dropped += 1;
         }
         if (dropped > 0) {
           this.fireShift("down", now, true);
-          this.kickdownUntil = now + 900 + sport * 500;
+          this.kickdownUntil = now + 1000 + sport * 700 + sportPlus * 400;
           this.kickdownArmedUntil = 0;
           shift = "down";
         }
       } else if (!inKickdown) {
-        // --- Upshift: delay under moderate/hard accel; cruise earlier ---
-        const accelBias = Math.max(0, Math.min(1, this.intentAccel / 7));
+        // Earlier cruise ups for city/highway; hold lower under pull (Sport Plus)
+        const accelBias = Math.max(0, Math.min(1, this.intentAccel / 6));
         const upFrac =
           this.intentAccel >= moderateAccel
-            ? 0.78 + sport * 0.12 + accelBias * 0.08 // hold gear / delayed upshift
-            : 0.58 + sport * 0.06; // cruise upshift
-        const upRpm = this.config.redline * Math.min(0.96, upFrac);
+            ? 0.62 + sport * 0.14 + accelBias * 0.1 + sportPlus * 0.06
+            : 0.4 + sport * 0.08;
+        const upRpm = this.config.redline * Math.min(0.92, upFrac);
         const cruiseCeil =
-          this.intentAccel < 0.6 ? this.config.redline * (0.52 + sport * 0.04) : Infinity;
+          this.intentAccel < 0.5
+            ? this.config.redline * (0.38 + sport * 0.05)
+            : Infinity;
 
         if (this.gear < maxGear && (rpm >= upRpm || rpm >= cruiseCeil)) {
           this.gear += 1;
           this.fireShift("up", now, false);
           shift = "up";
         } else if (this.gear > 1) {
-          // --- Lift / decel: rev-matched downshift, hysteresis vs noise ---
+          // Assertive rev-matched downs on lift/brake
           const downRpm =
-            this.config.idleRpm + 900 + sport * 350 - Math.min(0, this.intentAccel) * 80;
+            this.config.idleRpm +
+            1200 +
+            sport * 550 +
+            sportPlus * 350 -
+            Math.min(0, this.intentAccel) * 120;
           const clearLift = this.intentAccel <= liftThreshold;
           const lowRpm = rpm <= downRpm;
           if (clearLift || lowRpm) {
             const nextRpm = this.rpmAt(speedMph, this.gear - 1);
-            // Rev-match window: don't slam into the limiter on a tiny speed dip
-            if (nextRpm < this.config.redline * (clearLift ? 0.9 : 0.82)) {
+            const ceiling = clearLift
+              ? 0.94 + sportPlus * 0.02
+              : 0.86 + sport * 0.04;
+            if (nextRpm < this.config.redline * Math.min(0.98, ceiling)) {
               this.gear -= 1;
               this.fireShift("down", now, false);
               shift = "down";
+              // Chain a second down on hard brake / high Sport Plus
+              if (
+                clearLift &&
+                sportPlus > 0.35 &&
+                this.gear > 1 &&
+                this.rpmAt(speedMph, this.gear - 1) < this.config.redline * 0.88
+              ) {
+                this.gear -= 1;
+              }
             }
           }
         }
       } else {
-        // In kickdown hold: only upshift near hard redline; no early cruise ups
-        const holdUp = this.config.redline * (0.9 + sport * 0.05);
+        // Kickdown hold: stay in lower gears until near redline
+        const holdUp = this.config.redline * (0.88 + sport * 0.06 + sportPlus * 0.04);
         if (this.gear < maxGear && rpm >= holdUp) {
           this.gear += 1;
           this.fireShift("up", now, false);
@@ -179,7 +209,6 @@ export class Gearbox {
       }
     }
 
-    // Parked / near-zero: idle in gear 1
     if (speedMph < 0.4) {
       this.gear = 1;
       this.kickdownUntil = 0;
@@ -187,12 +216,15 @@ export class Gearbox {
     }
 
     const rpm = this.rpmAt(speedMph, this.gear);
-    const kickBoost = now < this.kickdownUntil ? 0.22 : 0;
+    const kickBoost = now < this.kickdownUntil ? 0.28 : 0;
     const load = Math.max(
       0,
       Math.min(
         1,
-        (this.smoothedAccel + 2.5) / 9 + speedMph / 130 + kickBoost + sport * 0.08,
+        (this.smoothedAccel + 2.5) / 8.5 +
+          speedMph / 120 +
+          kickBoost +
+          sport * 0.1,
       ),
     );
 
@@ -205,7 +237,37 @@ export class Gearbox {
     };
   }
 
-  /** Sportiness raises kickdown sensitivity and delayed-upshift RPM. */
+  private updateEv(
+    speedMph: number,
+    sport: number,
+    now: number,
+  ): GearboxState {
+    this.gear = 1;
+    // Motor "rpm" climbs with road speed + accel load (continuous, no shifts)
+    const base =
+      speedMph < 0.35
+        ? 400
+        : (speedMph / this.config.mphPerThousandInTop) * 1000;
+    const pull = Math.max(0, this.smoothedAccel) * (180 + sport * 120);
+    const rpm = Math.max(
+      400,
+      Math.min(this.config.redline, base + pull),
+    );
+    const load = Math.max(
+      0,
+      Math.min(
+        1,
+        (this.smoothedAccel + 1.5) / 8 + speedMph / 110 + sport * 0.12,
+      ),
+    );
+    // Clear any leftover ICE shift state
+    this.pendingShift = null;
+    this.kickdownUntil = 0;
+    this.kickdownArmedUntil = 0;
+    void now;
+    return { gear: 1, rpm, shift: null, load, kickdown: false };
+  }
+
   updateWithAggressiveness(
     speedMph: number,
     aggressiveness: number,
@@ -216,10 +278,17 @@ export class Gearbox {
   }
 
   private fireShift(kind: ShiftKind, now: number, kickdown: boolean) {
+    const sport = this.aggressiveness;
     this.pendingShift = kind;
-    this.pendingShiftUntil = now + (kind === "up" ? 160 : kickdown ? 280 : 220);
+    this.pendingShiftUntil =
+      now + (kind === "up" ? 140 : kickdown ? 240 : 180 - sport * 40);
     this.shiftCooldownUntil =
-      now + (kind === "up" ? 420 : kickdown ? 680 : 540);
+      now +
+      (kind === "up"
+        ? 360
+        : kickdown
+          ? 520 - sport * 80
+          : 400 - sport * 100);
   }
 
   private rpmAt(speedMph: number, gear: number): number {

@@ -1,6 +1,6 @@
 import "./style.css";
 import { EngineSynth, type EngineType } from "./engine/synthesis";
-import { Gearbox, V8_CONFIG, V12_CONFIG } from "./engine/gearbox";
+import { Gearbox, V8_CONFIG, V12_CONFIG, EV_CONFIG } from "./engine/gearbox";
 import { SpeedTracker, type SpeedMode } from "./engine/speed";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
@@ -21,11 +21,11 @@ app.innerHTML = `
         </div>
         <div class="side-stats">
           <div class="stat">
-            <span class="stat-k">RPM</span>
+            <span class="stat-k" id="rpmLabel">RPM</span>
             <span class="stat-v" id="rpmReadout">750</span>
           </div>
           <div class="stat">
-            <span class="stat-k">Gear</span>
+            <span class="stat-k" id="gearLabel">Gear</span>
             <span class="stat-v accent" id="gearReadout">1</span>
           </div>
           <div class="stat">
@@ -67,9 +67,10 @@ app.innerHTML = `
 
     <section class="panel">
       <h2>Engine</h2>
-      <div class="seg" role="group" aria-label="Engine type">
+      <div class="seg three" role="group" aria-label="Engine type">
         <button type="button" id="engV8" class="active">V8</button>
         <button type="button" id="engV12">V12</button>
+        <button type="button" id="engEv">EV</button>
       </div>
       <div class="control">
         <div class="control-label">
@@ -86,7 +87,8 @@ app.innerHTML = `
         <input id="aggSlider" type="range" min="0" max="100" step="1" value="55" />
       </div>
       <p class="tips">
-        Hard / quick accel kickdowns gears (PDK-style). Raise Sportiness for easier pulls.
+        V8/V12: PDK Sport Plus kickdowns — raise Sportiness for eager downs.
+        EV: continuous motor whine with speed/accel (no gears).
       </p>
     </section>
 
@@ -124,11 +126,22 @@ const el = {
   manualLabel: qs<HTMLElement>("#manualLabel"),
   engV8: qs<HTMLButtonElement>("#engV8"),
   engV12: qs<HTMLButtonElement>("#engV12"),
+  engEv: qs<HTMLButtonElement>("#engEv"),
+  rpmLabel: qs<HTMLElement>("#rpmLabel"),
+  gearLabel: qs<HTMLElement>("#gearLabel"),
   volSlider: qs<HTMLInputElement>("#volSlider"),
   volLabel: qs<HTMLElement>("#volLabel"),
   aggSlider: qs<HTMLInputElement>("#aggSlider"),
   aggLabel: qs<HTMLElement>("#aggLabel"),
 };
+
+function engineLabel(t: EngineType): string {
+  return t === "ev" ? "EV" : t === "v12" ? "V12" : "V8";
+}
+
+function configFor(t: EngineType) {
+  return t === "ev" ? EV_CONFIG : t === "v12" ? V12_CONFIG : V8_CONFIG;
+}
 
 function qs<T extends Element>(sel: string): T {
   return document.querySelector(sel) as T;
@@ -195,14 +208,18 @@ el.speedSlider.addEventListener("input", () => {
 function setEngineType(next: EngineType) {
   engine = next;
   synth.setEngine(next);
-  gearbox = new Gearbox(next === "v8" ? V8_CONFIG : V12_CONFIG);
+  gearbox = new Gearbox(configFor(next));
   el.engV8.classList.toggle("active", next === "v8");
   el.engV12.classList.toggle("active", next === "v12");
-  el.engineReadout.textContent = next === "v8" ? "V8" : "V12";
+  el.engEv.classList.toggle("active", next === "ev");
+  el.engineReadout.textContent = engineLabel(next);
+  el.rpmLabel.textContent = next === "ev" ? "Motor" : "RPM";
+  el.gearLabel.textContent = next === "ev" ? "Drive" : "Gear";
 }
 
 el.engV8.addEventListener("click", () => setEngineType("v8"));
 el.engV12.addEventListener("click", () => setEngineType("v12"));
+el.engEv.addEventListener("click", () => setEngineType("ev"));
 
 el.volSlider.addEventListener("input", () => {
   volume = Number(el.volSlider.value) / 100;
@@ -238,20 +255,22 @@ speed.subscribe((reading) => {
   }
 });
 
-const redline = () => (engine === "v8" ? V8_CONFIG.redline : V12_CONFIG.redline);
+const redline = () => configFor(engine).redline;
 
 function frame() {
   const reading = speed.reading;
   const mph = reading.mph;
   const gb = gearbox.updateWithAggressiveness(mph, aggressiveness);
+  const rl = redline();
+  const idleFloor = engine === "ev" ? 400 : 600;
 
   el.speedReadout.textContent = String(Math.round(mph));
   el.rpmReadout.textContent = String(Math.round(gb.rpm));
-  el.gearReadout.textContent = String(gb.gear);
+  el.gearReadout.textContent = engine === "ev" ? "D" : String(gb.gear);
 
-  const pct = Math.min(100, ((gb.rpm - 600) / (redline() - 600)) * 100);
+  const pct = Math.min(100, ((gb.rpm - idleFloor) / (rl - idleFloor)) * 100);
   el.rpmFill.style.width = `${pct}%`;
-  el.speedReadout.classList.toggle("hot", gb.rpm > redline() * 0.92);
+  el.speedReadout.classList.toggle("hot", gb.rpm > rl * 0.92);
 
   if (gb.shift && performance.now() - lastShiftFlash > 160) {
     lastShiftFlash = performance.now();
