@@ -20,6 +20,9 @@ export class SpeedTracker {
   private mode: SpeedMode = "manual";
   private manualMph = 0;
   private gpsMph = 0;
+  /** EMA of GPS mph to calm jitter before gearbox accel intent */
+  private gpsSmoothedMph = 0;
+  private gpsSmoothInitialized = false;
   private gpsAccuracy: number | null = null;
   private gpsAvailable = false;
   private gpsDenied = false;
@@ -28,7 +31,10 @@ export class SpeedTracker {
   private statusText = "Manual mode — drag the speed control";
 
   get reading(): SpeedReading {
-    const mph = this.mode === "gps" && this.gpsAvailable ? this.gpsMph : this.manualMph;
+    const mph =
+      this.mode === "gps" && this.gpsAvailable
+        ? this.gpsSmoothedMph
+        : this.manualMph;
     return {
       mph,
       mps: mph / MPS_TO_MPH,
@@ -99,12 +105,21 @@ export class SpeedTracker {
         if (speed == null || Number.isNaN(speed) || speed < 0) {
           this.gpsAvailable = true;
           this.gpsMph = 0;
+          this.gpsSmoothedMph = 0;
+          this.gpsSmoothInitialized = false;
           this.statusText =
             "GPS locked — speed unavailable while stationary (or browser withheld it). Drive, or use Manual.";
         } else {
           this.gpsAvailable = true;
           this.gpsMph = speed * MPS_TO_MPH;
-          this.statusText = `GPS ${Math.round(this.gpsMph)} mph · ±${Math.round(pos.coords.accuracy)} m`;
+          // Light EMA: enough to kill GPS noise, not enough to hide real kickdowns
+          if (!this.gpsSmoothInitialized) {
+            this.gpsSmoothedMph = this.gpsMph;
+            this.gpsSmoothInitialized = true;
+          } else {
+            this.gpsSmoothedMph += (this.gpsMph - this.gpsSmoothedMph) * 0.28;
+          }
+          this.statusText = `GPS ${Math.round(this.gpsSmoothedMph)} mph · ±${Math.round(pos.coords.accuracy)} m`;
         }
         this.emit();
       },
