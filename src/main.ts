@@ -85,6 +85,9 @@ app.innerHTML = `
         </div>
         <input id="aggSlider" type="range" min="0" max="100" step="1" value="55" />
       </div>
+      <p class="tips">
+        Hard / quick accel kickdowns gears (PDK-style). Raise Sportiness for easier pulls.
+      </p>
     </section>
 
     <p class="tips">
@@ -256,6 +259,7 @@ function frame() {
     void el.gauge.offsetWidth;
     el.gauge.classList.add("shift-flash");
   }
+  el.gauge.classList.toggle("kickdown", gb.kickdown);
 
   if (engaged) {
     synth.update({
