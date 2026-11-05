@@ -78,29 +78,25 @@ export class Gearbox {
     if (now >= this.shiftCooldownUntil && speedMph > 0.5) {
       const rpm = this.rpmAt(speedMph, this.gear);
       const maxGear = this.config.gearRatios.length;
-      const upRpm = this.config.redline * 0.88;
-      const downRpm = this.config.idleRpm + 900;
+      // Pull earlier when accelerating hard; hold higher revs when aggressive
+      const accelBias = Math.max(0, Math.min(1, this.smoothedAccel / 6));
+      const upRpm = this.config.redline * (0.62 + accelBias * 0.22);
+      const downRpm = this.config.idleRpm + 1100 + accelBias * 400;
+      // Cruise: keep RPM out of the basement even with near-zero accel
+      const cruiseCeil = this.config.redline * 0.55;
 
-      if (this.smoothedAccel > 0.8 && rpm >= upRpm && this.gear < maxGear) {
+      if (this.gear < maxGear && (rpm >= upRpm || rpm >= cruiseCeil)) {
         this.gear += 1;
         this.fireShift("up", now);
         shift = "up";
-      } else if (
-        this.smoothedAccel < -1.2 &&
-        rpm <= downRpm &&
-        this.gear > 1
-      ) {
-        this.gear -= 1;
-        this.fireShift("down", now);
-        shift = "down";
-      } else if (rpm >= this.config.redline * 0.95 && this.gear < maxGear) {
-        this.gear += 1;
-        this.fireShift("up", now);
-        shift = "up";
-      } else if (rpm < this.config.idleRpm + 400 && this.gear > 1 && speedMph > 1) {
-        this.gear -= 1;
-        this.fireShift("down", now);
-        shift = "down";
+      } else if (this.gear > 1 && (rpm <= downRpm || this.smoothedAccel < -2.5)) {
+        // Avoid hunting: only downshift on low rpm or clear deceleration
+        const nextRpm = this.rpmAt(speedMph, this.gear - 1);
+        if (nextRpm < this.config.redline * 0.92) {
+          this.gear -= 1;
+          this.fireShift("down", now);
+          shift = "down";
+        }
       }
     }
 
