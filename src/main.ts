@@ -1,6 +1,11 @@
 import "./style.css";
 import { EngineSynth, type EngineType } from "./engine/synthesis";
-import { Gearbox, V8_CONFIG, V12_CONFIG, EV_CONFIG } from "./engine/gearbox";
+import {
+  Gearbox,
+  PORSCHE_CONFIG,
+  FERRARI_CONFIG,
+  EV_CONFIG,
+} from "./engine/gearbox";
 import { SpeedTracker, type SpeedMode } from "./engine/speed";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
@@ -30,7 +35,7 @@ app.innerHTML = `
           </div>
           <div class="stat">
             <span class="stat-k">Engine</span>
-            <span class="stat-v" id="engineReadout">V8</span>
+            <span class="stat-v" id="engineReadout">Porsche</span>
           </div>
           <div class="stat">
             <span class="stat-k">Source</span>
@@ -68,8 +73,8 @@ app.innerHTML = `
     <section class="panel">
       <h2>Engine</h2>
       <div class="seg three" role="group" aria-label="Engine type">
-        <button type="button" id="engV8" class="active">V8</button>
-        <button type="button" id="engV12">V12</button>
+        <button type="button" id="engPorsche" class="active">Porsche</button>
+        <button type="button" id="engFerrari">Ferrari</button>
         <button type="button" id="engEv">EV</button>
       </div>
       <div class="control">
@@ -87,8 +92,8 @@ app.innerHTML = `
         <input id="aggSlider" type="range" min="0" max="100" step="1" value="55" />
       </div>
       <p class="tips">
-        V8/V12: PDK Sport Plus kickdowns — raise Sportiness for eager downs.
-        EV: jet / sonic whoosh — strong by 65–85 mph (no gears).
+        Porsche: flat-6 PDK Sports. Ferrari: screaming V12. Both shift through the box at road speeds.
+        EV: jet / sonic whoosh — strong by 65–85 mph.
       </p>
     </section>
 
@@ -101,9 +106,9 @@ app.innerHTML = `
 
 const synth = new EngineSynth();
 const speed = new SpeedTracker();
-let gearbox = new Gearbox(V8_CONFIG);
+let gearbox = new Gearbox(PORSCHE_CONFIG);
 
-let engine: EngineType = "v8";
+let engine: EngineType = "porsche";
 let volume = 0.7;
 let aggressiveness = 0.55;
 let engaged = false;
@@ -124,8 +129,8 @@ const el = {
   modeGps: qs<HTMLButtonElement>("#modeGps"),
   speedSlider: qs<HTMLInputElement>("#speedSlider"),
   manualLabel: qs<HTMLElement>("#manualLabel"),
-  engV8: qs<HTMLButtonElement>("#engV8"),
-  engV12: qs<HTMLButtonElement>("#engV12"),
+  engPorsche: qs<HTMLButtonElement>("#engPorsche"),
+  engFerrari: qs<HTMLButtonElement>("#engFerrari"),
   engEv: qs<HTMLButtonElement>("#engEv"),
   rpmLabel: qs<HTMLElement>("#rpmLabel"),
   gearLabel: qs<HTMLElement>("#gearLabel"),
@@ -136,11 +141,15 @@ const el = {
 };
 
 function engineLabel(t: EngineType): string {
-  return t === "ev" ? "EV" : t === "v12" ? "V12" : "V8";
+  return t === "ev" ? "EV" : t === "ferrari" ? "Ferrari" : "Porsche";
 }
 
 function configFor(t: EngineType) {
-  return t === "ev" ? EV_CONFIG : t === "v12" ? V12_CONFIG : V8_CONFIG;
+  return t === "ev"
+    ? EV_CONFIG
+    : t === "ferrari"
+      ? FERRARI_CONFIG
+      : PORSCHE_CONFIG;
 }
 
 function qs<T extends Element>(sel: string): T {
@@ -209,16 +218,16 @@ function setEngineType(next: EngineType) {
   engine = next;
   synth.setEngine(next);
   gearbox = new Gearbox(configFor(next));
-  el.engV8.classList.toggle("active", next === "v8");
-  el.engV12.classList.toggle("active", next === "v12");
+  el.engPorsche.classList.toggle("active", next === "porsche");
+  el.engFerrari.classList.toggle("active", next === "ferrari");
   el.engEv.classList.toggle("active", next === "ev");
   el.engineReadout.textContent = engineLabel(next);
   el.rpmLabel.textContent = next === "ev" ? "Motor" : "RPM";
   el.gearLabel.textContent = next === "ev" ? "Drive" : "Gear";
 }
 
-el.engV8.addEventListener("click", () => setEngineType("v8"));
-el.engV12.addEventListener("click", () => setEngineType("v12"));
+el.engPorsche.addEventListener("click", () => setEngineType("porsche"));
+el.engFerrari.addEventListener("click", () => setEngineType("ferrari"));
 el.engEv.addEventListener("click", () => setEngineType("ev"));
 
 el.volSlider.addEventListener("input", () => {
